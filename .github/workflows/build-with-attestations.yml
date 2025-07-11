@@ -6,7 +6,11 @@ on:
   pull_request:
     branches: [ main ]
   release:
-    types: [ published ]
+    types: [ published, created ]
+  create:
+    tags:
+      - 'v*'
+      - 'release-*'
 
 permissions:
   contents: read
@@ -46,13 +50,33 @@ jobs:
     - name: Create distribution package
       run: |
         mkdir -p dist
-        tar -czf dist/mvp-app-${{ github.sha }}.tar.gz build/
+        
+        # Determine if this is a release build
+        if [[ "${{ github.event_name }}" == "release" || "${{ github.event_name }}" == "create" ]]; then
+          # For releases, use tag name in filename
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            PACKAGE_NAME="mvp-app-${{ github.ref_name }}-${{ github.sha }}.tar.gz"
+          else
+            PACKAGE_NAME="mvp-app-release-${{ github.sha }}.tar.gz"
+          fi
+          echo "Building release package: $PACKAGE_NAME"
+        else
+          # For regular builds, use commit sha
+          PACKAGE_NAME="mvp-app-${{ github.sha }}.tar.gz"
+          echo "Building development package: $PACKAGE_NAME"
+        fi
+        
+        tar -czf "dist/$PACKAGE_NAME" build/
+        
+        # Store package name for later steps
+        echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+        echo "PACKAGE_PATH=dist/$PACKAGE_NAME" >> $GITHUB_ENV
         
     # Generate SLSA provenance attestation
     - name: Generate SLSA provenance
       uses: actions/attest-build-provenance@v1
       with:
-        subject-path: 'dist/mvp-app-${{ github.sha }}.tar.gz'
+        subject-path: '${{ env.PACKAGE_PATH }}'
     
     # Create SBOM (Software Bill of Materials) attestation
     - name: Generate SBOM
@@ -93,7 +117,7 @@ jobs:
     - name: Attest SBOM
       uses: actions/attest-sbom@v1
       with:
-        subject-path: 'dist/mvp-app-${{ github.sha }}.tar.gz'
+        subject-path: '${{ env.PACKAGE_PATH }}'
         sbom-path: 'sbom.json'
     
     # Get current date for attestation
@@ -105,7 +129,7 @@ jobs:
     - name: Create custom attestation
       uses: actions/attest@v1
       with:
-        subject-path: 'dist/mvp-app-${{ github.sha }}.tar.gz'
+        subject-path: '${{ env.PACKAGE_PATH }}'
         predicate-type: 'https://example.com/mvp-test/custom-attestation'
         predicate: |
           {
@@ -115,7 +139,11 @@ jobs:
               "workflow": "${{ github.workflow }}",
               "repository": "${{ github.repository }}",
               "ref": "${{ github.ref }}",
-              "sha": "${{ github.sha }}"
+              "sha": "${{ github.sha }}",
+              "ref_type": "${{ github.ref_type }}",
+              "ref_name": "${{ github.ref_name }}",
+              "event_name": "${{ github.event_name }}",
+              "is_release": ${{ github.event_name == 'release' || github.event_name == 'create' }}
             },
             "qualityChecks": {
               "testsRun": true,
@@ -125,7 +153,8 @@ jobs:
             "applicationInfo": {
               "name": "mvp-test-app",
               "version": "1.0.0",
-              "type": "node.js-express-api"
+              "type": "node.js-express-api",
+              "package_name": "${{ env.PACKAGE_NAME }}"
             }
           }
     
@@ -206,7 +235,7 @@ jobs:
     - name: Attest ruleset compliance
       uses: actions/attest@v1
       with:
-        subject-path: 'dist/mvp-app-${{ github.sha }}.tar.gz'
+        subject-path: '${{ env.PACKAGE_PATH }}'
         predicate-type: 'https://github.com/attestations/compliance'
         predicate-path: 'compliance-report.json'
     
@@ -235,13 +264,17 @@ jobs:
         echo "- ✅ **Compliance Attestation** - Repository ruleset compliance" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Artifact Details" >> $GITHUB_STEP_SUMMARY
-        echo "- **Package**: \`dist/mvp-app-${{ github.sha }}.tar.gz\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Package**: \`${{ env.PACKAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Type**: $(if [[ \"${{ github.event_name }}\" == \"release\" || \"${{ github.event_name }}\" == \"create\" ]]; then echo \"Release Build\"; else echo \"Development Build\"; fi)" >> $GITHUB_STEP_SUMMARY
         echo "- **Build ID**: \`${{ github.run_id }}\`" >> $GITHUB_STEP_SUMMARY
         echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        if [[ \"${{ github.ref_type }}\" == \"tag\" ]]; then
+          echo "- **Tag**: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+        fi
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "Artifacts can be verified using the GitHub CLI:" >> $GITHUB_STEP_SUMMARY
         echo '```bash' >> $GITHUB_STEP_SUMMARY
-        echo 'gh attestation verify dist/mvp-app-${{ github.sha }}.tar.gz --owner ${{ github.repository_owner }}' >> $GITHUB_STEP_SUMMARY
+        echo 'gh attestation verify ${{ env.PACKAGE_NAME }} --owner ${{ github.repository_owner }}' >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
 
   # Optional: Separate job for verification
@@ -260,9 +293,12 @@ jobs:
       run: |
         echo "Verifying attestations..."
         if command -v gh &> /dev/null; then
-          echo "Attempting to verify attestations for mvp-app-${{ github.sha }}.tar.gz"
-          gh attestation verify dist/mvp-app-${{ github.sha }}.tar.gz \
-            --owner ${{ github.repository_owner }} || echo "Verification failed or not yet available"
+          echo "Looking for artifacts to verify..."
+          find dist/ -name "*.tar.gz" -type f | while read artifact; do
+            echo "Attempting to verify attestations for $artifact"
+            gh attestation verify "$artifact" \
+              --owner ${{ github.repository_owner }} || echo "Verification failed or not yet available for $artifact"
+          done
         else
           echo "GitHub CLI not available for verification"
         fi
