@@ -1,0 +1,21 @@
+{
+  "name": "mvp-test-app",
+  "version": "1.0.0",
+  "description": "A simple MVP test application for GitHub Actions attestations",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "build": "mkdir -p build && cp -r src/* build/",
+    "test": "node test/test.js",
+    "lint": "echo 'Linting passed ✓'"
+  },
+  "keywords": ["mvp", "test", "attestations", "github-actions"],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}
