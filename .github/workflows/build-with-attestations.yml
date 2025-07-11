@@ -138,42 +138,68 @@ jobs:
         # Get repository rulesets (requires appropriate permissions)
         if command -v gh &> /dev/null; then
           echo "Fetching repository rulesets..."
-          gh api repos/${{ github.repository }}/rulesets \
-            --jq '.[] | {id: .id, name: .name, enforcement: .enforcement, target: .target}' \
-            > rulesets.json 2>/dev/null || echo "[]" > rulesets.json
+          gh api repos/${{ github.repository }}/rulesets 2>/dev/null \
+            | jq '[.[] | {id: .id, name: .name, enforcement: .enforcement, target: .target}]' \
+            > rulesets.json || echo '[]' > rulesets.json
         else
           echo "GitHub CLI not available, creating empty rulesets file"
-          echo "[]" > rulesets.json
+          echo '[]' > rulesets.json
         fi
         
-        # Create compliance report
-        cat << EOF > compliance-report.json
-        {
-          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-          "repository": "${{ github.repository }}",
-          "ref": "${{ github.ref }}",
-          "sha": "${{ github.sha }}",
-          "workflow_run_id": "${{ github.run_id }}",
-          "actor": "${{ github.actor }}",
-          "event_name": "${{ github.event_name }}",
-          "rulesets_applied": $(cat rulesets.json),
-          "branch_protection": {
-            "status_checks_required": true,
-            "require_review": false,
-            "dismiss_stale_reviews": false
-          },
-          "security_features": {
-            "dependency_scanning": false,
-            "code_scanning": false,
-            "secret_scanning": false
-          },
-          "build_checks": {
-            "tests_passed": true,
-            "linting_passed": true,
-            "build_successful": true
-          }
-        }
-        EOF
+        # Validate rulesets.json and ensure it contains valid JSON
+        if ! jq empty rulesets.json 2>/dev/null; then
+          echo "Invalid JSON in rulesets.json, creating empty array"
+          echo '[]' > rulesets.json
+        fi
+        
+        # Read rulesets content into a variable
+        RULESETS_CONTENT=$(cat rulesets.json)
+        
+        # Create compliance report with proper JSON formatting using jq
+        jq -n \
+          --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --arg repository "${{ github.repository }}" \
+          --arg ref "${{ github.ref }}" \
+          --arg sha "${{ github.sha }}" \
+          --arg workflow_run_id "${{ github.run_id }}" \
+          --arg actor "${{ github.actor }}" \
+          --arg event_name "${{ github.event_name }}" \
+          --argjson rulesets_applied "$RULESETS_CONTENT" \
+          '{
+            "timestamp": $timestamp,
+            "repository": $repository,
+            "ref": $ref,
+            "sha": $sha,
+            "workflow_run_id": $workflow_run_id,
+            "actor": $actor,
+            "event_name": $event_name,
+            "rulesets_applied": $rulesets_applied,
+            "branch_protection": {
+              "status_checks_required": true,
+              "require_review": false,
+              "dismiss_stale_reviews": false
+            },
+            "security_features": {
+              "dependency_scanning": false,
+              "code_scanning": false,
+              "secret_scanning": false
+            },
+            "build_checks": {
+              "tests_passed": true,
+              "linting_passed": true,
+              "build_successful": true
+            }
+          }' > compliance-report.json
+        
+        # Validate the final compliance report
+        if ! jq empty compliance-report.json 2>/dev/null; then
+          echo "Error: Generated compliance-report.json is invalid"
+          cat compliance-report.json
+          exit 1
+        fi
+        
+        echo "Compliance report generated successfully:"
+        jq . compliance-report.json
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
